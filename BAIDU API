@@ -1,0 +1,157 @@
+# encoding:utf-8
+import requests 
+
+# client_id  AK， client_secret  SK
+host = 'https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id=6nGURwbxfg1GpmPezsiwDYdf&client_secret=LvX2GFtoNy9OQO52DIFjxZ0IHNS0jTlp'
+response = requests.get(host)
+if response:
+    print(response.json())
+    
+class GetAccessToken:
+    def __init__(self):
+        # AK和SK
+        self.AK = '6nGURwbxfg1GpmPezsiwDYdf'
+        self.SK = 'LvX2GFtoNy9OQO52DIFjxZ0IHNS0jTlp'
+        self.token_url = 'https://aip.baidubce.com/oauth/2.0/token?grant_type=client_credentials&client_id='+self.AK+'&client_secret='+self.SK
+        self.headers = {'Content-Type':'application/json; charset=UTF-8'}
+ 
+    def get_access_token(self):
+        r = requests.get(self.token_url,headers = self.headers)
+        if r.text:
+            tokenkey = json.loads(r.text)['access_token']
+            print('get token success')
+            return tokenkey
+        else:
+            print('get token fail')
+            return ''
+import requests
+import json
+import os
+import pandas as pd
+import time
+import re
+import xlrd
+# 调用API类
+class SentimentBaidu:
+    def __init__(self,tp):
+        # Call the API you need to use
+        self.HOST = 'https://aip.baidubce.com/rpc/2.0/nlp/v1/sentiment_classify' + '?charset=UTF-8&access_token='
+        self.headers = {'Content-Type': 'application/json','Connection': 'close'}
+        self.textpath = tp
+        self.commentcomment = []
+        self.count = 0
+        # The speed setting corresponds to the QPS limit of Baidu AI, because the speed of the request is related to the network speed and device performance.
+        self.speedlimit = 0.1
+        # The initial speed and subsequent actual request speed are automatically adjusted according to errors
+        self.sleepdt = 0.5
+        self.errorwaittime = 1
+        self.qpserror = 0
+        self.qpserrorindex = 0
+        self.errorallcount = 0
+    
+    # Call Baidu API to obtain sentiment analysis results 
+    def get_content_sentiments(self,text,at):
+        raw = {'text': text}
+        data = json.dumps(raw).encode('gbk')
+        url = self.HOST+at
+        try:
+            if self.count - self.qpserrorindex > 500:
+                if self.sleepdt > self.speedlimit:
+                    self.sleepdt -= 0.001
+                    print('speed up, current speed:',
+                          self.sleepdt)
+                    self.qpserrorindex = self.count
+            time.sleep(self.sleepdt)
+            r = requests.post(url=url, data=data, headers=self.headers)
+            if 'error_code' in r.text:
+                error = r.json()['error_code']
+                print('error_code',error)
+                if error == 18:
+                    self.errorallcount += 1
+                    self.qpserror += 1
+                    self.qpserrorindex = self.count
+                    self.sleepdt += 0.001
+                    print('current qps error count = ', self.qpserror, 'speed down, current speed:', self.sleepdt, self.errorallcount)
+                    time.sleep(self.errorwaittime)
+            content = r.json()
+        except Exception as e:
+            self.errorallcount += 1
+            time.sleep(self.errorwaittime)
+            return
+        try:
+            if content['items']:
+                contentposprob = content['items'][0]['positive_prob']
+                contentnegprob = content['items'][0]['negative_prob']
+                contentconfi = content['items'][0]['confidence']
+                contentsenti = content['items'][0]['sentiment']
+                temp = [contentposprob,contentnegprob,contentconfi,contentsenti]
+                return temp
+        except KeyError as e:
+            self.errorallcount += 1
+            print('error reason:',content)
+            time.sleep(self.errorwaittime)
+            return
+    
+    # Use pandas to read all text to be analyzed
+    def get_comment_ori(self,fp):
+        fpath = fp
+        fpl = os.listdir(fpath)
+        contentall = []
+        for file in fpl:
+            fd = fpath + '/' + file
+            print('reading',fd)
+            temp = pd.read_excel(fd)    
+            contentall.append(temp)
+        contentalldf = pd.concat(contentall, ignore_index=True, sort=False)
+        print('comment get:',contentalldf.shape[0])
+        return contentalldf
+
+    # main
+    def run(self):
+        requests.adapters.DEFAULT_RETRIES = 2
+        ATclass = GetAccessToken()
+        AT = ATclass.get_access_token()
+        print('progress start current speed = ', self.sleepdt)
+        contentalldf = self.get_comment_ori(self.textpath)
+        commentcontent = contentalldf['title']
+        commentcontent = pd.DataFrame(commentcontent)
+        commentcontent.columns = ['comment']
+        # commentcontent['comment'] = commentcontent['comment'].apply(self.clean_comment)
+        for comment in commentcontent['comment']:
+            if comment:
+                self.count += 1
+                if self.count % 100 == 0:
+                    print(time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(time.time())),'正在处理第{0}条评论'.format(self.count))
+                commentsenti = self.get_content_sentiments(comment,AT)
+                if commentsenti is not None:
+                    commentbatch = [comment]+commentsenti
+                    self.commentcomment.append(commentbatch)
+                if self.count % 100 == 0:
+                    commentsentidf = pd.DataFrame(self.commentcomment,
+                                                  columns=['comment', 'contentposprob', 'contentnegprob',
+                                                           'contentconfi', 'contentsenti'])
+                    fpath = self.textpath + '/cpbaidu.csv'
+                    if os.path.exists(fpath):
+                        commentsentidf.to_csv(fpath, mode='a', encoding='utf-8-sig', index=False, header=False)
+                    else:
+                        commentsentidf.to_csv(fpath, encoding='utf-8-sig', index=False)
+                    # print('write to path',fpath,'write num:',commentsentidf.shape[0])
+                    self.commentcomment = []
+        print('finished progress')
+    
+    # Text cleaning method, optionally delete symbols, Spaces, emojis in the text
+    def clean_comment(self,text):
+        emoji = re.compile(u'['
+                          u'\U0001F300-\U0001F64F'
+                          u'\U0001F680-\U0001F6FF'
+                          u'\u2600-\u2B55]+',
+                          re.UNICODE)
+        text = re.sub("[\s+\.\!\/_,$%^*(+\"\']+|[+——！，。？、~@#￥%……&*（）:：]+", "", text)
+        text = re.sub(emoji,'',text)
+        return text
+
+
+if __name__=='__main__':
+    tp = r'C:\Users\yixun\Downloads\data\text' Change the folder location to store for your own text
+    runner = SentimentBaidu(tp)
+    runner.run()
