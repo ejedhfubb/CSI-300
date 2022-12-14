@@ -13,7 +13,7 @@ proxyMeta = "http://%(user)s:%(pass)s@%(host)s:%(port)s" % {
       "pass" : proxyPass,
   }
 
-  # 设置 http和https访问都是用HTTP代理
+
 proxies = {
       "http"  : proxyMeta,
       "https" : proxyMeta,
